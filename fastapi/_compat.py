@@ -556,6 +556,9 @@ def field_annotation_is_sequence(annotation: Union[Type[Any], None]) -> bool:
 
 
 def value_is_sequence(value: Any) -> bool:
+    value_type = type(value)
+    if value_type in (list, tuple, set, frozenset, deque):
+        return True
     return isinstance(value, sequence_types) and not isinstance(value, (str, bytes))  # type: ignore[arg-type]
 
 
