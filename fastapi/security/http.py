@@ -12,6 +12,8 @@ from starlette.requests import Request
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from typing_extensions import Annotated, Doc
 
+_BASIC = "basic"
+
 
 class HTTPBasicCredentials(BaseModel):
     """
@@ -184,36 +186,61 @@ class HTTPBasic(HTTPBase):
         self.realm = realm
         self.auto_error = auto_error
 
+        # Memoize the unauthorized headers per realm, these are static per instance
+        if self.realm:
+            self._unauthorized_headers = {"WWW-Authenticate": f'Basic realm="{self.realm}"'}
+        else:
+            self._unauthorized_headers = {"WWW-Authenticate": "Basic"}
+
     async def __call__(  # type: ignore
         self, request: Request
     ) -> Optional[HTTPBasicCredentials]:
+        # Fast-path: local attribute access, reduce global and attribute lookups
+        auto_error = self.auto_error
+        unauthorized_headers = self._unauthorized_headers
+        b64decode_ = b64decode
+        HTTPException_ = HTTPException
+        HTTP_401_UNAUTHORIZED_ = HTTP_401_UNAUTHORIZED
+
         authorization = request.headers.get("Authorization")
-        scheme, param = get_authorization_scheme_param(authorization)
-        if self.realm:
-            unauthorized_headers = {"WWW-Authenticate": f'Basic realm="{self.realm}"'}
-        else:
-            unauthorized_headers = {"WWW-Authenticate": "Basic"}
-        if not authorization or scheme.lower() != "basic":
-            if self.auto_error:
-                raise HTTPException(
-                    status_code=HTTP_401_UNAUTHORIZED,
+        if not authorization:
+            if auto_error:
+                raise HTTPException_(
+                    status_code=HTTP_401_UNAUTHORIZED_,
                     detail="Not authenticated",
                     headers=unauthorized_headers,
                 )
-            else:
-                return None
-        invalid_user_credentials_exc = HTTPException(
-            status_code=HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
-            headers=unauthorized_headers,
-        )
+            return None
+
+        # Inline get_authorization_scheme_param, as it is very small and hot path
+        scheme, _, param = authorization.partition(" ")
+        if not scheme or scheme.lower() != _BASIC:
+            if auto_error:
+                raise HTTPException_(
+                    status_code=HTTP_401_UNAUTHORIZED_,
+                    detail="Not authenticated",
+                    headers=unauthorized_headers,
+                )
+            return None
+
+        # Delay construction of exception for invalid credentials until needed
         try:
-            data = b64decode(param).decode("ascii")
+            data = b64decode_(param).decode("ascii")
         except (ValueError, UnicodeDecodeError, binascii.Error):
-            raise invalid_user_credentials_exc  # noqa: B904
+            raise HTTPException_(
+                status_code=HTTP_401_UNAUTHORIZED_,
+                detail="Invalid authentication credentials",
+                headers=unauthorized_headers,
+            )  # noqa: B904
+
         username, separator, password = data.partition(":")
         if not separator:
-            raise invalid_user_credentials_exc
+            raise HTTPException_(
+                status_code=HTTP_401_UNAUTHORIZED_,
+                detail="Invalid authentication credentials",
+                headers=unauthorized_headers,
+            )
+
         return HTTPBasicCredentials(username=username, password=password)
 
 
