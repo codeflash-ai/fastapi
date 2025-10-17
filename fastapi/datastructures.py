@@ -128,6 +128,10 @@ class UploadFile(StarletteUploadFile):
 
         To be awaitable, compatible with async, this is run in threadpool.
         """
+        import io
+        if isinstance(self.file, (io.BytesIO, io.StringIO)):
+            self.file.seek(offset)
+            return
         return await super().seek(offset)
 
     async def close(self) -> None:
